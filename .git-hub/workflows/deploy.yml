@@ -1,0 +1,58 @@
+name: Deploy Spring to EC2
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: EC2 접속 후 배포
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            docker network create mynetwork || true
+
+            if [ ! "$(docker ps -a -q -f name=oracle)" ]; then
+              docker run -d \
+                --name oracle \
+                --network mynetwork \
+                -p 1521:1521 \
+                -e ORACLE_PASSWORD=1234 \
+                -e APP_USER=hr \
+                -e APP_USER_PASSWORD=1234 \
+                -v oracle-data:/opt/oracle/oradata \
+                --restart always \
+                gvenzl/oracle-xe:21-slim
+            fi
+
+            if [ ! "$(docker ps -a -q -f name=redis)" ]; then
+              docker run -d \
+                --name redis \
+                --network mynetwork \
+                -p 6379:6379 \
+                -e REDIS_ARGS="--requirepass 1234" \
+                --restart always \
+                redis/redis-stack:latest
+            fi
+
+            cd ~/myspringapp
+            git pull origin main
+            docker stop myspringapp || true
+            docker rm myspringapp || true
+            docker build -t myspringapp .
+            docker run -d \
+              --name myspringapp \
+              --network mynetwork \
+              --env-file ~/myspringapp/.env \
+              -p 10000:10000 \
+              --restart always \
+              myspringapp
+
+            docker image prune -f
